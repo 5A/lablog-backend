@@ -1,0 +1,27 @@
+{
+  "auth": {
+    "users": [],
+    "jwt": {
+      "secret": "",
+      "algorithm": "HS256",
+      "expire_seconds": 604800
+    }
+  },
+  "CORS": {
+    "origins": [
+      "http://dev.zzi.io:8080",
+      "http://blog.zzi.io",
+      "https://blog.zzi.io",
+      "http://zzi.io",
+      "https://zzi.io",
+      "http://localhost:8080",
+      "http://127.0.0.1:8080"
+    ],
+    "allow_credentials": true,
+    "allow_methods": ["*"],
+    "allow_headers": ["*"]
+  },
+  "database": {
+    "root_path": "data/"
+  }
+}
