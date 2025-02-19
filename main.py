@@ -64,6 +64,9 @@ async def lifespan(app: FastAPI):
     global spam_keywords
     with open("./backend/spam_keywords.txt", "rb") as f:
         spam_keywords = f.read().decode('utf-8').split("\n")
+        # remove empty strings and leading/trailing whitespaces
+        spam_keywords = [keyword.strip() for keyword in spam_keywords if keyword.strip()]
+        lg.info("Loaded spam keywords list: {}.".format(spam_keywords))
     lg.info("Loading data from database.")
     db_mgr.load_database()
     lg.info("Starting up database manager...")
