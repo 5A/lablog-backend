@@ -133,6 +133,10 @@ class Lablog:
         if tags is not None:
             self.posts[post_id].tags = tags
 
+    def get_management_data(self) -> BlogData:
+        # return all data for management
+        return BlogData(posts=self.posts, comments=self.comments)
+
     def get_posts(
             self, post_id: Optional[str] = None,
             post_id_list: Optional[list[str]] = None,
@@ -171,7 +175,7 @@ class Lablog:
         c.posts.sort(key=lambda x: x.created_timestamp, reverse=True)
         return c
 
-    def add_comment(self, name: str, content: str, contact_address: str, post_id: str, created_timestamp: Optional[float] = None, ip_address: Optional[str] = None) -> str:
+    def add_comment(self, name: str, content: str, contact_address: str, post_id: str, created_timestamp: Optional[float] = None, ip_address: Optional[str] = None, display: bool = True) -> str:
         if post_id not in self.posts:
             raise ValueError("post_id is not in current database.")
         comment_id = uuid.uuid4().__str__()
@@ -183,7 +187,7 @@ class Lablog:
             ip_address=ip_address if ip_address is not None else "No IP info",
             comment_id=comment_id,
             post_id=post_id,
-            display=True
+            display=display
         )
         self.comments[comment_id] = comment
         # also add comment_id to post data
@@ -231,12 +235,19 @@ class Lablog:
                 comment = DisplayCommentData(
                     name=self.comments[comment_id].name,
                     content=self.comments[comment_id].content,
-                    created_timestamp=self.comments[comment_id].created_timestamp
+                    created_timestamp=int(self.comments[comment_id].created_timestamp)
                 )
                 c.comments.append(comment)
         # sort comments by ascending time order
         c.comments.sort(key=lambda x: x.created_timestamp, reverse=False)
         return c
+
+    def delete_comment(self, comment_id: str):
+        # remove comment and remove comment_id from post metadata
+        if comment_id in self.comments:
+            post_id = self.comments[comment_id].post_id
+            self.posts[post_id].comments.remove(comment_id)
+            del self.comments[comment_id]
 
     def serialize(self) -> str:
         data_obj = BlogData(

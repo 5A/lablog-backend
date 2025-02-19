@@ -9,7 +9,7 @@
   },
   "CORS": {
     "origins": [
-      "http://dev.zzi.io:8080",
+      "http://lo.zzi.io:8080",
       "http://blog.zzi.io",
       "https://blog.zzi.io",
       "http://zzi.io",

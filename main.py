@@ -13,9 +13,11 @@ import logging
 from typing import Annotated
 from json import JSONDecodeError
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
+from collections import defaultdict
 # third party libs
 from websockets.exceptions import ConnectionClosedOK
-from fastapi import Depends, FastAPI, HTTPException, status, WebSocket, WebSocketDisconnect, WebSocketException, Request
+from fastapi import Depends, FastAPI, HTTPException, status, WebSocket, WebSocketDisconnect, WebSocketException, Request, BackgroundTasks
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
@@ -27,7 +29,8 @@ from .auth import Token, TokenData, AccessLevelException
 from .ws import WebSocketConnectionManager
 from .database import LablogDatabaseManager
 from .data_models import (
-    ServerResourceNames, PostsCollection, CommentsCollection, DisplayCommentsCollection, AddOrUpdatePostData, AddOrUpdatePostResult, AddOrUpdateCommentData, AddCommentData, AddOrUpdateCommentResult
+    ServerResourceNames, PostsCollection, CommentsCollection, DisplayCommentsCollection, AddOrUpdatePostData, AddOrUpdatePostResult, AddOrUpdateCommentData, AddCommentData, AddOrUpdateCommentResult, BlogData,
+    DeleteCommentResult
 )
 
 lg = logging.getLogger(__name__)
@@ -38,10 +41,29 @@ db_mgr = LablogDatabaseManager(
     lablog=lablog,
     database_config=server_config.database)
 
+# Rate limiting data structure
+rate_limit_data = defaultdict(list)
+# Spam keywords list
+spam_keywords = []
+
+def is_rate_limited(client_host: str, limit: int = 5, period: timedelta = timedelta(minutes=30)) -> bool:
+    now = datetime.now()
+    rate_limit_data[client_host] = [timestamp for timestamp in rate_limit_data[client_host] if now - timestamp < period]
+    if len(rate_limit_data[client_host]) >= limit:
+        return True
+    rate_limit_data[client_host].append(now)
+    return False
+
+def is_spam(content: str) -> bool:
+    return any(keyword in content.lower() for keyword in spam_keywords)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Before application start, load database and scheduler
+    # Load Spam keywords list
+    global spam_keywords
+    with open("spam_keywords.txt", "r") as f:
+        spam_keywords = f.read().split("\n")
     lg.info("Loading data from database.")
     db_mgr.load_database()
     lg.info("Starting up database manager...")
@@ -66,6 +88,8 @@ app.add_middleware(
     allow_methods=server_config.CORS.allow_methods,
     allow_headers=server_config.CORS.allow_headers,
 )
+
+# =========== RESTful API endpoints, non-priviledged ===========
 
 
 @app.get("/")
@@ -102,6 +126,36 @@ async def get_posts() -> PostsCollection:
 async def get_posts_by_catagory(catagory: str) -> PostsCollection:
     return lablog.get_posts(catagory=catagory)
 
+
+@app.get("/comments/{post_id}")
+async def get_comments_for_post(post_id: str) -> DisplayCommentsCollection:
+    if post_id not in lablog.posts:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Post not found.")
+    comment_id_list = lablog.posts[post_id].comments
+    return lablog.get_comments_for_display(comment_id_list)
+
+
+@app.post("/comments/{post_id}")
+async def add_comment_for_post(post_id: str, comment_data: AddCommentData, request: Request, background_tasks: BackgroundTasks) -> AddOrUpdateCommentResult:
+    client_host = request.client.host
+    
+    if is_rate_limited(client_host):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Rate limit exceeded. Please try again later.")
+    
+    if is_spam(comment_data.content):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Comment content detected as spam.")
+    # add comment, by default, display is False before review
+    comment_id = lablog.add_comment(
+        name=comment_data.name, content=comment_data.content, contact_address=comment_data.contact_address, post_id=post_id, ip_address=client_host,
+        display=False)
+    lg.info("Added new comment \"{}\": {}".format(
+            comment_id, comment_data.model_dump_json()))
+    background_tasks.add_task(db_mgr.save_database)
+    return AddOrUpdateCommentResult(result='success', comment_id=comment_id)
+
+
+# =========== RESTful API endpoints, priviledged ===========
 
 @app.post("/posts")
 async def add_or_update_post(post_data: AddOrUpdatePostData,
@@ -148,8 +202,7 @@ async def add_or_modify_comment(comment_data: AddOrUpdateCommentData, token_data
         lg.info("Modified comment \"{}\": {}".format(
             comment_id, comment_data.model_dump_json()))
     else:
-        comment_id = lablog.add_comment(comment_id=comment_id,
-                                        name=comment_data.name,
+        comment_id = lablog.add_comment(name=comment_data.name,
                                         content=comment_data.content,
                                         contact_address=comment_data.contact_address,
                                         created_timestamp=comment_data.created_timestamp,
@@ -162,18 +215,21 @@ async def add_or_modify_comment(comment_data: AddOrUpdateCommentData, token_data
     return AddOrUpdateCommentResult(result='success', comment_id=comment_id)
 
 
-@app.get("/comments/{post_id}")
-async def get_comments_for_post(post_id: str) -> DisplayCommentsCollection:
-    comment_id_list = lablog.posts[post_id].comments
-    return lablog.get_comments(comment_id_list)
-
-
-@app.post("/comments/{post_id}")
-async def add_comment_for_post(post_id: str, comment_data: AddCommentData, request: Request) -> AddOrUpdateCommentResult:
-    client_host = request.client.host
-    comment_id = lablog.add_comment(
-        name=comment_data.name, content=comment_data.content, contact_address=comment_data.contact_address, post_id=post_id, ip_address=client_host)
-    lg.info("Added new comment \"{}\": {}".format(
-            comment_id, comment_data.model_dump_json()))
+@app.delete("/comments/{comment_id}")
+async def delete_comment(comment_id: str, token_data: Annotated[TokenData, Depends(validate_access_token)]) -> DeleteCommentResult:
+    check_access_level(token_data.access_level, UserAccessLevel.standard)
+    if comment_id not in lablog.comments:
+        lg.warning("Attempted to delete non-existent comment \"{}\".".format(comment_id))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Comment not found.")
+    lablog.delete_comment(comment_id)
+    lg.info("Deleted comment \"{}\".".format(comment_id))
     db_mgr.save_database()
-    return AddOrUpdateCommentResult(result='success', comment_id=comment_id)
+    return DeleteCommentResult(result='success', comment_id=comment_id)
+
+
+@app.get("/management/data")
+async def get_management_data(token_data: Annotated[TokenData, Depends(validate_access_token)]) -> BlogData:
+    check_access_level(token_data.access_level, UserAccessLevel.standard)
+    return lablog.get_management_data()
+

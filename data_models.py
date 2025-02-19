@@ -102,6 +102,9 @@ class AddOrUpdateCommentResult(BaseModel):
     result: str
     comment_id: str
 
+class DeleteCommentResult(BaseModel):
+    result: str
+    comment_id: str
 
 class PostsCollection(BaseModel):
     # This model is used when user requested a bunch of posts,
@@ -115,7 +118,8 @@ class DisplayCommentData(BaseModel):
     # not be returned, only those data for display should be returned
     name: str
     content: str
-    created_timestamp: float
+    # truncate time to seconds since frontend only needs to display time in seconds, this saves a bit of bandwidth.
+    created_timestamp: int
 
 
 class DisplayCommentsCollection(BaseModel):
