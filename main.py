@@ -62,8 +62,8 @@ async def lifespan(app: FastAPI):
     # Before application start, load database and scheduler
     # Load Spam keywords list
     global spam_keywords
-    with open("spam_keywords.txt", "r") as f:
-        spam_keywords = f.read().split("\n")
+    with open("./backend/spam_keywords.txt", "rb") as f:
+        spam_keywords = f.read().decode('utf-8').split("\n")
     lg.info("Loading data from database.")
     db_mgr.load_database()
     lg.info("Starting up database manager...")
